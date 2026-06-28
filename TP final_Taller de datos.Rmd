@@ -1,0 +1,979 @@
+---
+title: "Taller de datos: Trabajo Final"
+author: "Carla Zanellato"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document: default
+editor_options: 
+  markdown: 
+    wrap: sentence
+header-includes:
+  - \usepackage{float}
+bibliography: referencias.bib
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = FALSE,      # oculta el código
+  message = FALSE,   # oculta mensajes de librerías
+  warning = FALSE,   # oculta advertencias
+  results = 'hide',  # oculta salidas de texto
+  fig.show = 'hold',  # muestra solo los gráficos
+  fig.align = "center", # imágenes centradas
+  out.width="80%", # escala las figuras al 80 de su tamaño
+  fig.pos = "H" # pone la figura exactamente donde esta 
+)
+
+# para controlar los márgenes de los gráficos
+par(mar = c(1, 4, 1, 2))  # abajo, izquierda, arriba, derecha
+```
+
+```{r clean_workdir}
+# limpiar entorno y setear directorio de trabajo
+rm(list = ls())
+
+# setwd("C:/Users/carla/OneDrive/Escritorio/Posgrado Estadística/8. Taller de datos")
+
+```
+
+```{r librerias}
+
+# librerías
+
+# análisis exploratorio: preparar, limpiar, explorar y visualizar
+
+library(tidyverse)   # ggplot2 (visualización), dplyr (manipulación) tidyr (ordenar), readr (importar),
+                     #  purrr (funcional), tibble (formato), stringr (textos) y forcats (factores)   
+
+library(ggplot2) 
+# entrenamiento y evaluación de modelos
+library(caret)       
+
+# matriz de correlaciones
+library(corrplot)     
+
+# curvas ROC
+library(pROC)
+#library(PRROC)
+
+# gráficos
+#library(patchwork) # organizar gráficos p1/p2|p3
+# library(gridExtra) # para pares de gráficos de ggplot
+
+
+
+```
+
+```{r carga_datos}
+## Cargar datos y transformar variables categóricas a factor
+datos <- read.csv("data/Dataset.csv") 
+
+```
+
+\newpage
+
+## 1. Introducción
+
+El objetivo de este trabajo es predecir el diagnóstico de un tumor mamario (benigno o maligno) utilizando un conjunto de características extraídas de imágenes digitalizadas de muestras tumorales.
+
+Se trata de un problema de clasificación supervisada, dado que la variable respuesta es cualitativa y se desea asignar cada observación a una de dos categorías.
+*(@islr2, Cap. 4)*
+
+Formalmente, en clasificación supervisada se dispone de una muestra $$\{(x_i, y_i)\}_{i=1}^n$$
+
+donde $x_i \in \mathbb{R}^p$ representa el vector de predictores y y $y_i \in \{B, M\}$ la clase observada.
+
+El objetivo es construir un clasificador $\hat{G}(x)$ que permita predecir la clase de nuevas observaciones.
+
+Para ello se estimar las probabilidades condicionales $$\mathbb{P}(Y = k \mid X = x)$$ y se asigna la observación a la clase con mayor probabilidad *(@islr2, Cap. 4)*.
+
+## 2. Análisis Exploratorio de los Datos
+
+Previo al ajuste de modelos, se realiza un análisis descriptivo y gráfico del conjunto de datos.
+Las visualizaciones fueron realizadas utilizando el paquete ggplot2 *(@ggplot2)*.
+
+### 2.1 Descripción del dataset:
+
+```{r desc_dataset}
+
+# Resumen
+str(datos)
+colnames(datos)
+
+# Balance de clases
+prop.table(table(datos$target))
+
+# conversión de target a factor
+datos$target <- factor(datos$target, levels = c("M", "B")) # definimos como positivo a la categoría M
+levels(datos$target)
+
+# chequeo niveles de la respuesta
+levels(datos$target)
+
+# veo si hay datos faltantes
+as.data.frame(colSums(is.na(datos)))
+```
+
+El conjunto de datos analizado contiene **569 observaciones** correspondientes tumores mamarios clasificados como benignos (B) o malignos (M).
+
+La ***variable respuesta*** presenta una distribución aproximada de 60% benignos y 40% malignos, lo que indica un desbalance moderado entre clases.
+
+Las ***variables explicativas*** corresponden a características numéricas extraídas de imágenes celulares.
+
+El dataset **no posee valores faltantes**.
+
+#### Breve descripción de predictores
+
+1.  `radius`: Tamaño de las células
+2.  `texture`: Variación de la intensidad (un indicador indirecto de cromatina nuclear)
+3.  `perimeter`: Perímetro del núcleo
+4.  `area`: Área del núcleo
+5.  `smoothness`: Variación local del radio de las células, las pequeñas irregularidades en el borde.
+6.  `compactnesss`: Calculada como perímetro2/área − 1. Indica que tan compacta o extendida es la forma de las células
+7.  `concavity`: Mide la severidad o profundidad de las partes cóncavas (hacia adentro) del contorno de las células.
+8.  `concave`: Indica cuantas secciones cóncavas tiene el contorno de las células.
+9.  `symetry`: Evalúa cuan simétrica es la forma de las células
+10. `fractal_dimension`: Mide la complejidad del borde de las células; valores mayores indican contornos mas irregulares.
+
+De cada una de estas características se dispone de:
+
+-   El promedio `_mean`,
+-   el desvío estándar `_se`
+-   y del caso mas extremo o "peor valor" encontrado, `_worst`
+
+En total, el dataset contiene **30 variables explicativas**.
+
+
+### 2.2 Separación de datos en Entrenamiento y Testeo
+
+Para evitar **data leakage**, antes de proseguir con el EDA se realiza un split de la muestra en train y test en una proporción 80/20.
+
+Se realiza el split utilizando `createDataPartition()` del paquete `caret` *(@caret)*.
+Este comando realiza un split estratificado de modo que train y test mantienen la misma proporción de "B" y "M" que el dataset original.
+
+```{r train-test}
+set.seed(7457) 
+
+train_index <- createDataPartition(datos$target, 
+                                    p = 0.8, 
+                                    list = FALSE)
+train <- datos[train_index, ]
+test  <- datos[-train_index, ]
+```
+
+### 2.3 Correlación entre predictores
+
+Se analiza la matriz de correlación entre variables explicativas.
+
+```{r cor_matrix}
+
+# variables explicativas
+covar <- train %>%
+  select(-target)
+
+# 1. Matriz de correlación
+cor_matrix <- cor(covar)
+
+# 2. Convertir a distancia
+dist_matrix <- as.dist(1 - abs(cor_matrix))
+
+# 3. Clustering jerárquico
+hc <- hclust(dist_matrix) 
+
+# 4. Reordenar matriz
+
+hc$order
+colnames(cor_matrix)[hc$order]
+
+cor_ordered <- cor_matrix[hc$order, hc$order]
+
+```
+
+Como herramienta de visualización, para poder distinguir grupos de predictores según su nivel de correlación, se realiza agrupamiento jerárquico sobre una matriz de distancias $d_{ij} = 1 - |cor(X_i, X_j)|$ de las variables explicativas.
+Esto permite agrupar los predictores variables según su grado de correlación, como se muestra en la siguiente figura:
+
+```{r dendograma, fig.cap=" Dendograma con 5 clusters para agrupacion de variables según su grado de correlación"}
+# gráfico del dendograma 
+# 1
+
+groups <- cutree(hc, k = 5)
+groups
+split(names(groups), groups)
+
+par(mar = c(1, 4, 1, 2)) 
+
+# dendograma
+plot(hc,
+     main ="",
+     sub = "",     # esto borra el texto feo
+     xlab = "",
+     cex = 0.6)
+
+rect.hclust(hc, k = 5, border = c("red4", "steelblue", "darkgreen", "purple4", "orange3"))
+```
+
+Como se observa en la *Fig. 1*, con un clustering jerárquico en 5 clusters las variables se agruparon como sigue:
+
+i.  variables asociadas al tamaño celular,
+
+-   `radius`
+-   `area`
+-   `perimeter`
+
+ii. variables de textura nuclear, `texture`
+
+iii. Características morfológicas de las células (mean y worst),
+
+-   `concavity`
+-   `concave`
+-   `compactnesss`
+-   `symetry`
+
+iv. irregularidad del borde celular
+
+-   `fractal_dimension`
+-   `smoothness`
+
+v.  medidas de variabilidad (`_se`), excluyendo las de tamaño.
+
+Para observar visualmente la magnitud de las correlaciones entre los predictores se realiza un gráfico tipo mapa de calor de la matriz de correlación.
+
+Para obtener mayor impacto visual e identificar mas fácil los grupos predictores mas correlacionados, las variables fueron ordenadas según el clustering jerárquico realizado.
+
+Se utilizó la función `corrplot()` del paquete corrplot (@corrplot) para visualizar la matriz de correlación.
+
+```{r heatmap, fig.cap="Heatmap de la matriz de correlación ordenada mediante clustering jerárquico"}
+
+# Trafico heatmap con corplot
+# 2
+
+corrplot(cor_ordered,
+         method = "ellipse",
+         tl.cex = 0.6, 
+         addrect = 8)
+
+```
+
+En la *Fig. 2* se observa la presencia de bloques altamente correlacionados consistentes con los bloques hallados en el clustering jerárquico por lo que se puede concluir que el dataset presenta multicolinealidad entre sus predictores.
+
+Las correlaciones visualmente mas marcadas se dan entre el bloque i."variables relacionadas con tamaño celular" seguidas de las del bloque iii.
+"Características morfológicas".
+
+### 2.4. Distribuciones univariadas por clase
+
+Se grafican las densidades empíricas (estimaciones no paramétrica de densidad) en cada clase de los predictores para evaluar cuanto separan los datos entre clases dentro de las variables.
+
+#### 2.4.1 Variables del grupo Tamaño
+
+
+```{r dist_clase_tamaño, fig.cap="Distribución por clase de las características de tamaño"}
+mean_vars <- train %>%
+  select(target, contains("radius"), contains("area"), contains("perimeter"))
+
+mean_long <- mean_vars %>%
+  pivot_longer(
+    cols = -target,
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# 3
+ggplot(mean_long, aes(x = value, fill = target, color = target)) +
+  geom_density(alpha = 0.3) +
+  scale_color_manual(values = c("steelblue4", "darkred")) +
+    scale_fill_manual(values = c("steelblue", "darkred")) +
+  facet_wrap(~ variable, scales = "free")
+```
+
+
+Se observa en la figura un fuerte desplazamiento entre clases para las variables de tamaño correspondientes a `mean` y `worst` observándose una separación entre clases, mayores valores en las variables de tamaño son característicos de tumores malignos.
+Las variables relacionadas a la variabilidad intratumoral del tamaño `_se` muestran un mayor solapamiento entre clases.
+
+Tambien se puede observar una mayor dispersión para el caso de tumores malignos respecto de los benignos.
+
+#### 2.4.2 Variables del grupo forma e irregularidad
+
+
+```{r dist_clase_forma_irreg , fig.cap="Distribución por clase de las características morfológicas y de irregularidad de los bordes"}
+mean_vars <- train %>%
+  select( -contains("radius"), - contains("area"), - contains("perimeter"), - contains("texture"), - contains("_se"))
+
+mean_long <- mean_vars %>%
+  pivot_longer(
+    cols = -target,
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# 4
+ggplot(mean_long, aes(x = value, fill = target, color = target)) +
+  geom_density(alpha = 0.3) +
+  scale_color_manual(values = c("steelblue4", "darkred")) +
+    scale_fill_manual(values = c("steelblue", "darkred")) +
+  facet_wrap(~ variable, scales = "free")
+```
+
+
+Se puede observar una separación entre clases moderada para `concavity` y `concave`, pero menor que el observado para las variables de tamaño.
+Las variables `simetry`, `smoothness` y `fractal_dimension` presentan un mayor solapamiento entre clases indicando menor separación entre clases para estos predictores.
+
+#### 2.4.3 Variables del grupo Textura
+
+```{r dist_clase_text , fig.cap="Distribución por clase de la característica textura", out.width="60%"}
+worst_vars <- train %>%
+  select(target, contains("texture"))
+
+worst_long <- worst_vars %>%
+  pivot_longer(
+    cols = -target,
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# 5
+ggplot(worst_long, aes(x = value, fill = target, color = target)) +
+  geom_density(alpha = 0.3) +
+  scale_color_manual(values = c("steelblue4", "darkred")) +
+    scale_fill_manual(values = c("steelblue", "darkred")) +
+  facet_wrap(~ variable, scales = "free")
+```
+
+
+En la figura se observa que en el caso de `texture` hay mas superposición entre las clases, indicativo de menor capacidad para separar entre clases.
+
+#### 2.4.4 Variables del grupo Variabilidad (se)
+
+```{r dist_clase_variabilidad , fig.cap="Distribución por clase de las caracteristicas de variabilidad intra tumoral"}
+
+# se
+se_vars <- train %>%
+  select(target, contains("_se"), -"radius_se", -"area_se", -"perimeter_se", -"texture_se")
+
+se_long <- se_vars %>%
+  pivot_longer(
+    cols = -target,
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# 6
+ggplot(se_long, aes(x = value, fill = target, color = target)) +
+  geom_density(alpha = 0.3) +
+  scale_color_manual(values = c("steelblue4", "darkred")) +
+    scale_fill_manual(values = c("steelblue", "darkred")) +
+  facet_wrap(~ variable, scales = "free")
+
+```
+
+
+En la figura se observa un solapamiento elevado entre las clases B y M, lo que sugiere en principio una menor capacidad de estas variables para discriminar entre clases.
+ 
+ 
+### 2.5 Relaciones bivariadas entre variables representativas
+
+Se seleccionaron variables representativas de los bloques identificados en la sección anterior para representar relaciones bivariadas diferenciando las clases con diferentes colores.
+
+Se utilizó la función `ggpairs()` del paquete GGally (@GGally) para visualizar relaciones bivariadas entre variables.
+
+```{r drelac_bivar , fig.cap="Relaciones bivariadas por clase"}
+vars <- train %>%
+  select(target,
+         radius_mean,
+         perimeter_mean,
+         concavity_worst,
+         concave_worst)
+
+library(GGally)
+# 7
+ggpairs(vars,
+        columns = 2:5,   # solo columnas numéricas
+        mapping = aes(color = target, alpha = 0.5)) +
+        scale_color_manual(values = c("steelblue4", "darkred")) +
+        scale_fill_manual(values = c("steelblue", "darkred")) 
+
+```
+
+Las fronteras observadas en la *Fig. 7* parecen aproximadamente lineales.
+Esto sugiere que modelos lineales podrían capturar adecuadamente la separación.
+
+## 3. Métricas de desempeño y estrategia de evaluación del modelo
+
+### 3.1 Matriz de confusión y métricas
+
+La evaluación del clasificador se basa en la matriz de confusión, que resume la comparación entre clases reales y predichas *(@islr2, Cap. 4, Tabla 4.6)*
+
+```{r maconf_matrix_teor, results='asis'}
+
+# armo la tabla con tibble
+conf_mat <- tibble::tibble(
+  Real = c("M", "B"),
+  `Predicho M` = c("TP", "FP"),
+  `Predicho B` = c("FN", "TN")
+)
+
+# muestra la tabla como tabla numerada (tabla 1)
+knitr::kable(
+  conf_mat,
+  caption = "Matriz de confusion. Filas: clase real. Columnas: clase predicha."
+)
+```
+
+donde:
+
+-   Verdaderos positivos (TP)
+-   Verdaderos negativos (TN)
+-   Falsos positivos (FP)
+-   Falsos negativos (FN)
+
+A partir de la matriz de confusión *(tabla 1)*, se definen las siguientes métricas de desempeño.
+
+#### Accuracy
+
+
+Una medida global de desempeño es la tasa de aciertos, definida como:
+
+$$
+\text{accuracy} = \frac{TP + TN}{TP + TN + FP + FN} = \frac{TP + TN}{Total}
+$$
+
+Sin embargo, la tasa global de aciertos (accuracy) puede no ser el criterio más adecuado cuando los errores en cada clase tienen consecuencias diferentes.
+
+En este caso, al tratarse de una aplicación clínica, los errores no pesan igual.
+El error de clasificar un tumor maligno como benigno implica no detectar una enfermedad potencialmente grave, mientras que clasificar un tumor benigno como maligno conduce a estudios adicionales, pero no implica omitir tratamiento necesario.
+
+Por esta razón, resulta necesario considerar métricas que desagreguen el desempeño por clase.
+
+#### Sensibilidad (TPR): Tasa de verdaderos positivos
+
+$$
+\text{Sensibilidad (TPR)} = \frac{verdaderos\ \ positivos}{positivos\ \ totales} = \frac{TP}{TP + FN}
+$$
+
+#### Especificidad (TNR): Tasa de Verdaderos Negativos
+
+$$
+\text{Especificidad (TNR)} = \frac{verdaderos\ \ negativos}{negativos\ \ totales} = \frac{TN}{TN + FP}
+$$
+
+Además, se define la tasa de falsos positivos como:
+
+$$
+\text{FPR} = 1 - \text{Especificidad}= \frac{FP}{TN + FP}
+$$ *(@islr2, Cap. 4)*
+
+En este trabajo se define como clase positiva el diagnóstico de tumor maligno (M).
+Dado que el error más crítico es no detectar un caso positivo, **se prioriza maximizar la sensibilidad**, pero siempre manteniendo un equilibrio razonable con la especificidad.
+
+#### Umbral de clasificación, Curva ROC y AUC
+
+
+Al modificar el umbral de clasificación *(valor de probabilidad a partir del cual se clasifica una observación como positiva)*, se altera la relación entre verdaderos positivos y falsos positivos generando trade-off entre la tasa de *sensibilidad (TPR)* y la *FPR*.
+La elección del umbral debe basarse en el conocimiento del dominio y en los costos asociados a los distintos tipos de error.
+
+El **desempeño global** del clasificador puede resumirse mediante el área bajo la **curva ROC (AUC)**.
+La curva se construye representando la tasa de verdaderos positivos frente a la tasa de falsos positivos para distintos valores del punto de corte (umbral).
+Esto hace que AUC sea una métrica de desempeño global del modelo independiente de el valor de corte.
+
+Un clasificador ideal es aquel cuya curva ROC se aproxima al vértice superior izquierdo, mientras que un clasificador que no mejora el azar tendrá un AUC cercano a 0.5.
+*(@islr2, Cap. 4)*
+
+Por lo tanto, el AUC permite comparar modelos considerando simultáneamente sensibilidad y tasa de falsos positivos y permite evaluar el desempeño del clasificador independientemente del umbral elegido.
+
+### 3.5 Estrategia de evaluación de los modelos
+
+El entrenamiento de los modelos y la elección de hiperparámetros se realizará mediante validación cruzada sobre el **conjunto de entrenamiento (train)**.
+Este esquema permite estimar el desempeño predictivo (generalización) de forma más estable y menos optimista que evaluar sobre los mismos datos de entrenamiento.
+
+El **conjunto de prueba (test)** se reserva exclusivamente para la evaluación final de los modelos seleccionados, simulando el desempeño en datos no observados.
+
+Los modelos deben evaluarse sobre datos no utilizados en el entrenamiento, "datos no vistos por el modelo" para estimar el error de generalización o error fuera de muestra.
+*(@islr2, Cap. 2, Cap 5.)*
+
+## 4. Modelado
+
+Para definir las condiciones de entrenamiento se utiliza `trainControl()` del paquete `caret`, definiendo un esquema de validación cruzada 10-fold sobre el conjunto de entrenamiento.
+En los modelos que lo requieran, también se utilizará para la selección de hiperparámetros.
+
+Además, se solicita que los modelos devuelvan probabilidades de clase, lo cual es necesario para construir la curva ROC y calcular el AUC.
+
+Finalmente, se especifica `twoClassSummary` para reportar métricas adecuadas para clasificación binaria (AUC, sensibilidad y especificidad), en lugar de utilizar `accuracy` (métrica por defecto de caret).
+
+Estas condiciones se mantiene para el entrenamiento de todos los modelos sugeridos.
+
+```{r control de entrenamiento}
+control <- trainControl(method = "cv",
+                        number = 10,
+                        classProbs = TRUE, # para que además de clase, que calcule probabilidades
+                        summaryFunction = twoClassSummary) # métricas para clasificación binaria (ROC, Sens, Spec).
+```
+
+### 4.1 Regresión logística (modelo base)
+
+En el análisis exploratorio se observaron patrones de separación aproximadamente lineales en algunas combinaciones de variables, por lo que la regresión logística constituye un modelo base apropiado para iniciar la comparación.
+
+Dado el alto grado de correlación entre varias covariables, puede existir multicolinealidad, lo que afecta la estabilidad e interpretación de los coeficientes *(@islr2, Cap. 3)*.
+Sin embargo, como que el objetivo principal es la capacidad predictiva, esto no invalida el uso del modelo para clasificación, aunque sí limita la interpretación individual de los coeficientes.
+
+#### Implementación:
+
+El modelo se ajusta mediante `train()` utilizando un modelo lineal generalizado con familia binomial, optimizando el AUC en validación cruzada.
+
+```{r fit_reglog}
+fit_glm_cv <- train(target ~ .,
+                       data = train,
+                       method = "glm",
+                       family = "binomial",
+                       metric = "ROC",      #  Durante la CV, elige el “mejor” modelo según ROC
+                       trControl = control)
+
+fit_glm_cv
+fit_glm_cv$results
+
+caret:::twoClassSummary
+```
+
+#### Resultados de desempeño obtenidos por validación cruzada:
+
+```{r results_reglog, results='asis'}
+res_log <- tibble(
+  Modelo = "Regresion Logistica",
+  AUC_CV = fit_glm_cv$results$ROC,
+  Sensibilidad = fit_glm_cv$results$Sens,
+  Especificidad = fit_glm_cv$results$Spec
+)
+
+# tabla 2
+knitr::kable(
+  res_log,
+  digits = 3,
+  caption = " Desempeno promedio bajo validacion cruzada (10-fold) para el modelo de Regresion Logistica."
+)
+```
+
+Como se observa en la *tabla 2*, modelo logístico presenta buen desempeño en validación cruzada, consistente con lo observado en el EDA respecto de una separación aproximadamente lineal entre clases
+
+### 4.2 Análisis Discriminante Lineal (LDA)
+
+El Análisis Discriminante Lineal (LDA) es un método de clasificación generativo, modela la distribución condicional de los predictores en cada clase y aplica la regla de Bayes para clasificar nuevas observaciones.
+
+Asume que la distribución de los predictores en cada clase es normal multivariada y que la matriz de covarianza es igual para todas las clases.
+
+La frontera de decisión entre clases es lineal, al igual que en regresión logística, aunque el modelo se basa en una aproximación distinta (modelado de densidades vs. modelado directo de probabilidades).
+*(@islr2, Cap. 4)*
+
+#### Implementación
+
+El modelo LDA se ajusta utilizando el método `lda` dentro de `train()`, empleando el mismo esquema de validación cruzada definido previamente y optimizando el AUC.
+
+```{r fit_lda}
+# chequeo de niveles en respuesta
+levels(train$target)
+
+set.seed(7457)
+
+fit_lda_cv <- train(target ~ ., data = train, method = "lda",
+  metric = "ROC", trControl = control
+)
+
+fit_lda_cv
+fit_lda_cv$results
+
+```
+
+#### Resultados de desempeño obtenidos mediante validación cruzada:
+
+```{r results_lda, results='asis'}
+res_lda <- tibble::tibble(
+  Modelo = "LDA",
+  AUC_CV = fit_lda_cv$results$ROC[1],
+  Sensibilidad = fit_lda_cv$results$Sens[1],
+  Especificidad = fit_lda_cv$results$Spec[1]
+)
+
+# tabla 3
+knitr::kable(res_lda, digits = 3,
+             caption = "Desempeno promedio (10-fold CV) para LDA.")
+```
+
+### 4.3 Análisis Discriminante Cuadrático (QDA)
+
+El Análisis Discriminante Cuadrático (QDA) es un método de clasificación generativo (al igual que LDA) en el que se mantiene el supuesto de normalidad multivariada de los predictores dentro de cada clase, pero *no se asume igualdad de la matriz de covarianza* entre las clase.
+
+A diferencia de LDA, la frontera de decisión entre clases es ahora cuadrática.
+*(@islr2, Cap. 4)*
+
+#### Implementación
+
+El modelo LDA se ajusta utilizando el método `qda` dentro de `train()`, empleando el mismo esquema de validación cruzada definido previamente y optimizando el AUC.
+
+```{r fit_qda}
+
+set.seed(7457)
+
+fit_qda_cv <- train(target ~ ., data=train, method="qda",
+                    metric="ROC", trControl=control)
+
+
+fit_qda_cv
+fit_qda_cv$results
+```
+
+#### Resultados de desempeño obtenidos mediante validación cruzada:
+
+```{r res_qda, results='asis'}
+res_qda <- tibble::tibble(
+  Modelo="QDA",
+  AUC_CV=fit_qda_cv$results$ROC[1],
+  Sensibilidad=fit_qda_cv$results$Sens[1],
+  Especificidad=fit_qda_cv$results$Spec[1]
+)
+# tabla 4
+knitr::kable(res_qda, digits = 3,
+             caption = "Desempeno promedio (10-fold CV) para QDA.")
+```
+
+### 4.4 K-Nearest Neighbors (KNN)
+
+El método K-Nearest Neighbors (KNN) es un clasificador no paramétrico que no asume una forma funcional explícita para la relación entre predictores y respuesta.
+
+Una consideración importante es que KNN depende de una métrica de distancia y por lo tanto es sensible a la escala de las variables.
+Es por esto que resulta necesario estandarizar los predictores antes de aplicar el modelo.
+*(@islr2, Cap. 4.1)*
+
+#### Implementación
+
+En KNN, el único hiperparámetro es el número de vecinos `K`, controla el compromiso sesgo–varianza: Valores pequeños de K implican bajo sesgo y alta varianza mientras que valores grandes de K dan lugar a mayor sesgo y menor varianza.
+La elección de K se realiza mediante validación cruzada dentro del conjunto de entrenamiento.
+
+La estandarización se hace dentro de `train` agregando la instrucción `preProcess = c("center", "scale")`
+
+```{r fit_KNN}
+
+set.seed(7457)
+
+fit_knn_cv <- train(
+  target ~ .,
+  data = train,
+  method = "knn",
+  metric = "ROC",
+  trControl = control,
+  preProcess = c("center", "scale"),
+  tuneLength = 20
+)
+
+fit_knn_cv
+fit_knn_cv$results
+```
+
+#### Resultados de desempeño obtenidos mediante validación cruzada:
+
+```{r res_knn, results='asis'}
+
+res_knn <- tibble::tibble(
+  Modelo="KNN",
+  AUC_CV=max(fit_knn_cv$results$ROC),
+  Sensibilidad=fit_knn_cv$results$Sens[which.max(fit_knn_cv$results$ROC)],
+  Especificidad=fit_knn_cv$results$Spec[which.max(fit_knn_cv$results$ROC)]
+)
+
+# tabla 5
+knitr::kable(res_knn, digits = 3,
+             caption = "Desempeno promedio (10-fold CV) para KNN.")
+```
+
+### 4.5 Random Forest
+
+Random Forest es un método de ensamble basado en árboles de decisión que combina dos ideas principales:
+
+1.  *Bagging (Bootstrap Aggregating)*: Generar múltiples muestras bootstrap del conjunto de entrenamiento y ajustar un árbol de decisión en cada muestra.
+    Esto reduce la varianza del modelo respecto de un único árbol profundo.
+
+2.  *Selección aleatoria de variables en cada split*: En cada división del árbol, en lugar de considerar todos los predictores posibles, se selecciona aleatoriamente un subconjunto de tamaño m de variables candidatas para el split.
+    Esto reduce la correlación entre árboles y mejora el desempeño del ensamble (reduce mas la varianza).
+
+En clasificación, la predicción final se obtiene por voto mayoritario entre los árboles.
+
+Random Forest resulta atractivo para esta aplicación porque es robusto a multicolinealidad y no requiere supuestos paramétricos sobre la distribución de los predictores (al igual que KNN).
+*(@islr2, Cap. 8.2–8.3)*
+
+#### Implementación
+
+Se ajusta el modelo utilizando el método `rf` en `train()`, optimizando el AUC mediante validación cruzada.
+
+En Random Forest, el principal hiperparámetro es `mtry`, número de variables candidatas en cada split.
+Este parámetro se selecciona mediante validación cruzada, mientras que el número de árboles se fija en un valor suficientemente grande (por defecto 500), dado que aumentar el número de árboles reduce la varianza sin inducir sobreajuste.
+
+```{r fit_RF}
+
+set.seed(7457)
+
+fit_rf_cv <- train(
+  target ~ .,
+  data = train,
+  method = "rf",
+  metric = "ROC",
+  trControl = control,
+  tuneLength = 10
+)
+
+fit_rf_cv
+fit_rf_cv$results
+```
+
+#### Resultados de desempeño obtenidos mediante validación cruzada:
+
+```{r res_RF, results='asis'}
+
+res_rf <- tibble::tibble(
+  Modelo="Random Forest",
+  AUC_CV=max(fit_rf_cv$results$ROC),
+  Sensibilidad=fit_rf_cv$results$Sens[which.max(fit_rf_cv$results$ROC)],
+  Especificidad=fit_rf_cv$results$Spec[which.max(fit_rf_cv$results$ROC)]
+)
+
+# tabla 6
+knitr::kable(res_rf, digits = 3,
+             caption = "Desempeno promedio (10-fold CV) para Random Forest.")
+```
+
+#### Importancia de variables
+
+```{r imp_var , fig.cap="10 variables mas importantes en el modelo RF"}
+imp_rf <- varImp(fit_rf_cv, scale = FALSE)
+imp_rf
+
+# 8
+plot(imp_rf, top = 10, color = "red4" )
+```
+
+Como se observa en la figura, las 10 variables mas importantes son las medias (`mean`) y valores extremos (`worst`) de las variables de tamaño - `area`, `perimeter`, `radius` - y de `concavity` y `concave`.
+Esto coincide con lo observado la evaluación de las distribuciones por clase de los predictores en el EDA.
+
+### 5. Comparación y selección de modelos
+
+En la tabla siguiente se muestra una comparación de AUC, Sensibilidad y Especificidad obtenidas para cada uno de los modelos entrenados.
+
+```{r resumen_comparacion, results='asis'}
+resumen_cv <- dplyr::bind_rows(res_log, res_lda, res_qda, res_knn, res_rf)
+
+# tabla 7
+knitr::kable(resumen_cv, digits = 3,
+             caption = "Comparacion de modelos por validacion cruzada (10-fold) en el conjunto de entrenamiento.")
+```
+
+La comparación entre modelos se realiza en función del AUC obtenido mediante validación cruzada, dado que esta métrica resume la capacidad discriminativa global del clasificador y es independiente del umbral de clasificación.
+*(@islr2, Cap. 4).*
+
+Se observa que **KNN y Random Forest** presentan el mejor desempeño discriminativo, con valores de AUC iguales (0.994).
+
+El modelo de *Regresión logística* es el que tuvo el desempeño mas bajo.
+
+Los *modelos generativos (LDA y QDA)* presentan un desempeño discriminativo superior al de la regresión logística.
+
+### 6. Rendimiento en TEST de los modelos seleccionados
+
+Los modelos seleccionados son **KNN y Random Forest**.
+El desempeño de estos modelos en el set de testeo son los siguientes:
+
+```{r}
+
+### KNN ---------------------------------------------------------------------------------------------
+
+# vector de probabilidades predichas de la clase positiva "M" en los datos de TEST
+prob_knn_test <- predict(fit_knn_cv, test, type = "prob")[, "M"]
+
+# predicciones con umbral 0.5
+pred_knn_test <- factor(ifelse(prob_knn_test >= 0.5, "M", "B"),
+                        levels = levels(test$target))
+
+# Matriz de confusión
+cm_knn <- confusionMatrix(pred_knn_test, test$target, positive = "M")
+cm_knn
+
+# ROC/ AUC
+roc_knn_test <- roc(test$target, prob_knn_test, 
+                    levels= c("B","M"),   # negativo, positivo - roc toma como positivo el 2do nivel
+                    direction = "<") # dirección ascendente, mayor predictor implica mayor probabilidad de la                                           clase positiva
+
+auc_knn_test <- as.numeric(auc(roc_knn_test))
+auc_knn_test
+```
+
+```{r}
+
+### Random Forest  --------------------------------------------------------------------
+
+# vector de probabilidades predichas de la clase positiva "M" en los datos de TEST
+prob_rf_test <- predict(fit_rf_cv, test, type = "prob")[, "M"]
+
+# predicciones con umbral 0.5
+pred_rf_test <- factor(ifelse(prob_rf_test >= 0.5, "M", "B"),
+                       levels = levels(test$target))
+
+# Matriz de confusión
+cm_rf <- confusionMatrix(pred_rf_test, test$target, positive = "M")
+cm_rf
+
+# ROC/AUC
+roc_rf_test <- roc(test$target, prob_rf_test, 
+                   levels= c("B","M"),   # negativo, positivo - roc toma como positivo el 2do nivel
+                   direction = "<")
+
+auc_rf_test <- as.numeric(auc(roc_rf_test))
+auc_rf_test
+```
+
+```{r resultados_test, results='asis'}
+### Resumen de resultados
+
+#KNN
+res_knn_test <- tibble::tibble(
+  Modelo = "KNN",
+  AUC = auc_knn_test,
+  Sensibilidad = cm_knn[["byClass"]][["Sensitivity"]],
+  Especificidad = cm_knn[["byClass"]][["Specificity"]]
+)
+
+# RF
+res_rf_test <- tibble::tibble(
+  Modelo = "Random Forest",
+  AUC = auc_rf_test,
+  Sensibilidad = cm_rf[["byClass"]][["Sensitivity"]],
+  Especificidad = cm_rf[["byClass"]][["Specificity"]]
+)
+
+# tabla Resumen desempeño en test
+
+resumen_test<- dplyr::bind_rows(res_knn_test, res_rf_test)
+
+# tabla 8
+knitr::kable(resumen_test, digits = 3,
+             caption = "Desempeño de modelos seleccionados en set de Testeo")
+```
+
+La curva ROC y el AUC se calcularon utilizando el paquete pROC (@proc).
+La Figura 9 presenta la comparación de las curvas ROC en el conjunto de prueba.
+
+```{r fig_roc_test, fig.cap="Curvas ROC en el conjunto de prueba para los modelos Random Forest y KNN."}
+
+plot(roc_rf_test, col="steelblue4", main="")
+plot(roc_knn_test, col="red4", add=TRUE)
+legend("bottomright",
+       legend=c("Random Forest","KNN"),
+       col=c("steelblue4","red4"),
+       lwd=2)
+```
+
+En el conjunto de prueba, ambos modelos mantienen un desempeño elevado, lo que sugiere buena capacidad de generalización.
+
+Las métricas de sensibilidad y especificidad reportadas corresponden al umbral de clasificación 0.5.
+Dado el contexto clínico, en la siguiente sección se ajustará el umbral para priorizar una mayor sensibilidad, evaluando el compromiso con la especificidad.
+
+## 7. Elección del umbral de decisión y desempeño final en test 
+
+Dado el mayor costo clínico asociado a falsos negativos, se ajustó el umbral de clasificación para *priorizar sensibilidad*.
+
+Se tomó como criterio elegir el umbral que maximiza la especificidad sujeto a una **sensibilidad mínima de 0.95** en el conjunto de prueba.
+
+Con este criterio, se recalcularon las predicciones en TEST, obteniendo las métricas de generalización reportadas en la siguiente tabla.
+
+```{r}
+
+# KNN ----------------------------------------------------------------------------------------
+# 1) Tabla de thresholds de la ROC
+coords_knn <- coords(roc_knn_test,
+                    x = "all", # todos los puntos de la ROC
+                    ret = c("threshold","sensitivity","specificity"),    # de cada punto, devuelve: ...
+                    transpose = FALSE)  # devuelve como data.frame, una fila por threshold
+
+# 2) filtrar thresholds con sensibilidad >= 0.95
+coords_knn_95 <- coords_knn[coords_knn$sensitivity >= 0.95, ]
+
+# 3) dentro de esos elegir el que tenga mayor especificidad
+best_knn <- coords_knn_95[which.max(coords_knn_95$specificity), ]
+best_knn
+
+# RF ---------------------------------------------------------------------------------------
+# 1) Tabla de thresholds de la ROC
+coords_rf <- coords(roc_rf_test,
+                    x = "all", # todos los puntos de la ROC
+                    ret = c("threshold","sensitivity","specificity"),    # de cada punto, devuelve: ...
+                    transpose = FALSE)  # devuelve como data.frame, una fila por threshold
+
+# 2) filtrar thresholds con sensibilidad >= 0.95
+coords_rf_95 <- coords_rf[coords_rf$sensitivity >= 0.95, ]
+
+# 3) dentro de esos elegir el que tenga mayor especificidad
+best_rf <- coords_rf_95[which.max(coords_rf_95$specificity), ]
+best_rf
+
+```
+
+```{r}
+
+# Nuevas predicciones para knn ------------------------------------------------
+
+# Extraer threshold numérico
+thr_knn <- as.numeric(best_knn$threshold[1])
+
+# Predicción con el nuevo threshold
+pred_knn_95 <- factor(ifelse(prob_knn_test >= thr_knn, "M", "B"),
+                     levels = levels(test$target))
+
+# Matriz de confusión y métricas
+cm_knn_95 <- confusionMatrix(pred_knn_95, test$target, positive = "M")
+cm_knn_95
+
+
+# Nuevas predicciones para RF ------------------------------------------------
+
+# Extraer threshold numérico
+thr_rf <- as.numeric(best_rf$threshold[1])
+
+# Predicción con el nuevo threshold
+pred_rf_95 <- factor(ifelse(prob_rf_test >= thr_rf, "M", "B"),
+                     levels = levels(test$target))
+
+# Matriz de confusión y métricas
+cm_rf_95 <- confusionMatrix(pred_rf_95, test$target, positive = "M")
+cm_rf_95
+```
+
+```{r resultados_test_final, results='asis'}
+tabla_thr <- tibble::tibble(
+  Modelo = c("Random Forest", "KNN"),
+  Threshold = c(thr_rf, thr_knn),
+  AUC = c(auc_rf_test, auc_knn_test),
+  Sens_TEST = c(cm_rf_95$byClass["Sensitivity"], cm_knn_95$byClass["Sensitivity"]),
+  Spec_TEST = c(cm_rf_95$byClass["Specificity"], cm_knn_95$byClass["Specificity"]),
+  Acc_TEST  = c(cm_rf_95$overall["Accuracy"],   cm_knn_95$overall["Accuracy"])
+)
+
+# tabla 9
+knitr::kable(tabla_thr, digits = 3,
+             caption = "Desempeño en TEST con umbral ajustado (criterio: Sensibilidad ≥ 0.95 y máxima especificidad).")
+```
+
+Como se observa en la tabla, para el conjunto de prueba, ambos modelos presentan excelente capacidad discriminativa (AUC superiores a 0.98).
+
+Tras el ajuste del umbral de clasificación priorizando una sensibilidad mínima de 0.95, se observa que Random Forest alcanza una sensibilidad de 0.976, superior a la obtenida por KNN (0.952), manteniendo al mismo tiempo una especificidad elevada (0.958).
+
+Si bien KNN presenta una especificidad ligeramente mayor, el criterio clínico definido en este trabajo prioriza la detección de tumores malignos, es decir, minimizar falsos negativos, por lo que se sugiere utilizar Random Forest como modelo predictivo.
+
+## 8. Conclusiones finales
+
+La regresión logística, como modelo discriminativo lineal, presenta el menor AUC en validación cruzada, lo que sugiere que una frontera estrictamente lineal no captura completamente la estructura del problema.
+
+Los modelos generativos (LDA y QDA) muestran mejoras sustanciales en capacidad discriminativa.
+LDA alcanza un AUC elevado, aunque distribuye los errores favoreciendo especificidad sobre sensibilidad.
+QDA incrementa la sensibilidad pero no mejora el AUC global respecto de LDA, lo que indica que la frontera cuadrática no aporta una ventaja significativa.
+
+Finalmente, los métodos no paramétricos (KNN y Random Forest) presentan los mayores valores de AUC.
+Esto sugiere que el problema puede involucrar relaciones no lineales o interacciones complejas entre variables, mejor capturadas por modelos flexibles.
+Entre ellos, Random Forest ofrece mayor estabilidad y mejor equilibrio clínico tras el ajuste del umbral, motivo por el cual es el modelo sugerido para este problema.
+
+\newpage
+
+## 10. Referencias
